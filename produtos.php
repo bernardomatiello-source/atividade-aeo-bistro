@@ -1,8 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__.'/config/database.php';
-function e($v): string { return htmlspecialchars((string)($v ?? ''),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'); }
-function brl($v): string { return 'R$ '.number_format((float)$v,2,',','.'); }
+require_once __DIR__.'/config/helpers.php';
 $erro='';$sucesso='';$editando=null;
 if($_SERVER['REQUEST_METHOD']==='POST'){
  $acao=(string)($_POST['acao']??'');

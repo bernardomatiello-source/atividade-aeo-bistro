@@ -1,8 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__.'/config/database.php';
-function e($v): string { return htmlspecialchars((string)($v ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
-function brl($v): string { return 'R$ '.number_format((float)$v,2,',','.'); }
+require_once __DIR__.'/config/helpers.php';
 $erro=''; $sucesso='';
 $produtos=$pdo->query("SELECT id,nome,categoria,preco FROM produtos WHERE ativo=1 ORDER BY categoria,nome")->fetchAll();
 
@@ -44,7 +43,11 @@ if ($_SERVER['REQUEST_METHOD']==='POST') {
 if(isset($_GET['criada'])) $sucesso='Comanda #'.(int)$_GET['criada'].' registrada com sucesso.';
 if(isset($_GET['entregue'])) $sucesso='Comanda marcada como entregue.';
 if(isset($_GET['obs'])) $sucesso='Observação atualizada.';
-$comandas=$pdo->query("SELECT c.*,COALESCE(SUM(i.quantidade*i.preco_unitario),0) total,COALESCE(SUM(i.quantidade),0) unidades FROM comandas c LEFT JOIN itens_comanda i ON i.comanda_id=c.id GROUP BY c.id ORDER BY c.id DESC LIMIT 30")->fetchAll();
+$filtros=['todas'=>'Todas','aberta'=>'Em preparo','entregue'=>'Entregues'];
+$filtro=(string)($_GET['status']??'todas'); if(!isset($filtros[$filtro])) $filtro='todas';
+$where=$filtro==='todas'?'':'WHERE c.status=?';
+$s=$pdo->prepare("SELECT c.*,COALESCE(SUM(i.quantidade*i.preco_unitario),0) total,COALESCE(SUM(i.quantidade),0) unidades FROM comandas c LEFT JOIN itens_comanda i ON i.comanda_id=c.id $where GROUP BY c.id ORDER BY c.id DESC LIMIT 30");
+$s->execute($filtro==='todas'?[]:[$filtro]); $comandas=$s->fetchAll();
 $itensPor=[];
 if($comandas){$ids=array_map(fn($c)=>(int)$c['id'],$comandas);$ph=implode(',',array_fill(0,count($ids),'?'));$s=$pdo->prepare("SELECT * FROM itens_comanda WHERE comanda_id IN ($ph) ORDER BY id");$s->execute($ids);foreach($s->fetchAll() as $i)$itensPor[$i['comanda_id']][]=$i;}
 ?>
@@ -53,13 +56,31 @@ if($comandas){$ids=array_map(fn($c)=>(int)$c['id'],$comandas);$ph=implode(',',ar
 <main class="wrap"><section class="hero"><div><span class="eyebrow">OPERAÇÃO DA COZINHA</span><h1>Comandas do restaurante</h1><p>Registre pedidos, acompanhe o preparo e marque pedidos entregues.</p></div><div class="hero-mark">☕</div></section>
 <?php if($erro):?><div class="alert error"><?=e($erro)?></div><?php endif;?><?php if($sucesso):?><div class="alert success"><?=e($sucesso)?></div><?php endif;?>
 <section class="layout"><div class="panel"><div class="panel-heading"><div><span class="step">01 / NOVO PEDIDO</span><h2>Abrir comanda</h2></div><span class="pill">Cozinha</span></div>
-<form method="post"><input type="hidden" name="acao" value="criar_comanda">
-<?php if(!$produtos):?><div class="empty">Nenhum produto ativo. Cadastre produtos no painel Produtos.</div><?php else:?><div class="product-list"><?php $cat='';foreach($produtos as $p):if($cat!==$p['categoria']):$cat=$p['categoria'];?><div class="category-label"><?=e($cat)?></div><?php endif;?><label class="product-row"><span class="product-info"><strong><?=e($p['nome'])?></strong><small><?=brl($p['preco'])?></small></span><span class="quantity"><span>Qtd.</span><input type="number" name="quantidade[<?=(int)$p['id']?>]" min="0" max="99" value="0" aria-label="Quantidade de <?=e($p['nome'])?>"></span></label><?php endforeach;?></div>
-<label class="field-label" for="obs">Observação geral da cozinha</label><textarea id="obs" name="observacao" rows="3" maxlength="2000" placeholder="Ex.: sem cebola, molho à parte..."></textarea><button class="button primary full" type="submit">＋ Registrar comanda</button><?php endif;?></form><p class="hint">O preço do item é salvo na comanda, preservando o valor histórico mesmo que o cardápio mude.</p></div>
+<form method="post" id="form-comanda"><input type="hidden" name="acao" value="criar_comanda">
+<?php if(!$produtos):?><div class="empty">Nenhum produto ativo. Cadastre produtos no painel Produtos.</div><?php else:?><div class="product-list"><?php $cat='';foreach($produtos as $p):if($cat!==$p['categoria']):$cat=$p['categoria'];?><div class="category-label"><?=e($cat)?></div><?php endif;?><label class="product-row"><span class="product-info"><strong><?=e($p['nome'])?></strong><small><?=brl($p['preco'])?></small></span><span class="quantity"><span>Qtd.</span><input type="number" name="quantidade[<?=(int)$p['id']?>]" min="0" max="99" value="0" data-preco="<?=e($p['preco'])?>" aria-label="Quantidade de <?=e($p['nome'])?>"></span></label><?php endforeach;?></div>
+<label class="field-label" for="obs">Observação geral da cozinha</label><textarea id="obs" name="observacao" rows="3" maxlength="2000" placeholder="Ex.: sem cebola, molho à parte..."></textarea><div class="order-total live-total"><span id="preview-itens">0 item(ns)</span><strong id="preview-total" aria-live="polite">R$ 0,00</strong></div><button class="button primary full" type="submit">＋ Registrar comanda</button><?php endif;?></form><p class="hint">O preço do item é salvo na comanda, preservando o valor histórico mesmo que o cardápio mude.</p></div>
 <div class="orders-column"><div class="section-heading"><div><span class="step">02 / ACOMPANHAMENTO</span><h2>Últimas comandas</h2></div><span class="count"><?=count($comandas)?> / 30</span></div>
-<?php if(!$comandas):?><div class="panel empty large">Nenhuma comanda registrada ainda.<br><span>Use o formulário para criar o primeiro pedido.</span></div><?php else:foreach($comandas as $c):?><article class="order-card <?=$c['status']==='entregue'?'order-done':''?>"><div class="order-top"><div><span class="order-number">COMANDA #<?=(int)$c['numero']?></span><div class="order-date"><?=e(date('d/m/Y H:i',strtotime($c['data_abertura'])))?></div></div><span class="status <?=$c['status']==='entregue'?'status-done':'status-open'?>"><?=$c['status']==='entregue'?'✓ Entregue':'● Em preparo'?></span></div>
+<nav class="filter-tabs" aria-label="Filtrar comandas por status"><?php foreach($filtros as $k=>$rotulo):?><a href="index.php<?=$k==='todas'?'':'?status='.$k?>" class="<?=$filtro===$k?'filter-active':''?>"<?=$filtro===$k?' aria-current="page"':''?>><?=e($rotulo)?></a><?php endforeach;?></nav>
+<?php if(!$comandas && $filtro!=='todas'):?><div class="panel empty large">Nenhuma comanda com status "<?=e($filtros[$filtro])?>".</div><?php elseif(!$comandas):?><div class="panel empty large">Nenhuma comanda registrada ainda.<br><span>Use o formulário para criar o primeiro pedido.</span></div><?php else:foreach($comandas as $c):?><article class="order-card <?=$c['status']==='entregue'?'order-done':''?>"><div class="order-top"><div><span class="order-number">COMANDA #<?=(int)$c['numero']?></span><div class="order-date"><?=e(date('d/m/Y H:i',strtotime($c['data_abertura'])))?></div></div><span class="status <?=$c['status']==='entregue'?'status-done':'status-open'?>"><?=$c['status']==='entregue'?'✓ Entregue':'● Em preparo'?></span></div>
 <div class="order-items"><?php foreach(($itensPor[$c['id']]??[]) as $i):?><div class="order-item"><span><b><?=(int)$i['quantidade']?>×</b> <?=e($i['nome_produto'])?></span><strong><?=brl($i['quantidade']*$i['preco_unitario'])?></strong></div><?php endforeach;?></div>
 <div class="order-total"><span><?=(int)$c['unidades']?> item(ns)</span><strong><?=brl($c['total'])?></strong></div>
 <?php if($c['observacao']):?><div class="observation"><b>Observação:</b> <?=nl2br(e($c['observacao']))?></div><?php endif;?>
 <?php if($c['status']==='entregue'):?><div class="delivered-note">Entregue em <?=e(date('d/m/Y H:i',strtotime($c['data_entrega'])))?></div><?php else:?><div class="order-actions"><form method="post" onsubmit="return confirm('Marcar comanda #<?=(int)$c['numero']?> como entregue?')"><input type="hidden" name="acao" value="entregar"><input type="hidden" name="comanda_id" value="<?=(int)$c['id']?>"><button class="button done-button" type="submit">✓ Marcar entregue</button></form><details><summary>Editar observação</summary><form method="post" class="edit-note"><input type="hidden" name="acao" value="observacao"><input type="hidden" name="comanda_id" value="<?=(int)$c['id']?>"><textarea name="observacao" rows="2" maxlength="2000"><?=e($c['observacao'])?></textarea><button class="button secondary" type="submit">Salvar observação</button></form></details></div><?php endif;?></article><?php endforeach;endif;?></div></section>
-<footer>Projeto didático • UC2 — Práticas DevOps em Projetos Web <span>PHP + MySQL</span></footer></main></body></html>
+<footer>Projeto didático • UC2 — Práticas DevOps em Projetos Web <span>PHP + MySQL</span></footer></main>
+<script>
+// Atualiza o total previsto da nova comanda conforme as quantidades são alteradas.
+(function(){
+ var form=document.getElementById('form-comanda'); if(!form) return;
+ var fmt=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'});
+ function atualizar(){
+  var total=0,itens=0;
+  form.querySelectorAll('input[data-preco]').forEach(function(inp){
+   var q=parseInt(inp.value,10); if(!(q>0)) return; q=Math.min(q,99);
+   itens+=q; total+=q*parseFloat(inp.dataset.preco);
+  });
+  document.getElementById('preview-itens').textContent=itens+' item(ns)';
+  document.getElementById('preview-total').textContent=fmt.format(total);
+ }
+ form.addEventListener('input',atualizar); atualizar();
+})();
+</script></body></html>
